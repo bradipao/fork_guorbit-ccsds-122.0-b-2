@@ -1,86 +1,97 @@
 from __future__ import annotations
 import argparse
-import os
+import sys
 import numpy as np
 
 from src.io_segmentation import (
     read_bmp, write_bmp,
     iter_segments, segment_view,
-    iter_blocks, block_view,
     split_rgb_to_bands
 )
+from src.dwt import (
+    dwt97m_forward_2d
+)
+from src.idwt import dwt97m_inverse_2d
 
-def roundtrip_test(input_path: str, out_path: str) -> None:
-    img = read_bmp(input_path)
-    write_bmp(out_path, img)
-    back = read_bmp(out_path)
 
-    same_shape = back.shape == img.shape
-    same_dtype = back.dtype == img.dtype
-    same_pixels = np.array_equal(back, img)
+def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels: int) -> tuple[np.ndarray, bool]:
+    """
+    Runs per-segment forward 9/7M DWT then inverse and writes results into a reconstructed band.
+    Returns (reconstructed_band, all_ok)
+    """
+    H, W = band_img.shape
+    recon = np.empty_like(band_img)
+    all_ok = True
 
-    print("[Roundtrip]")
-    print(f"  shape: {img.shape} -> {back.shape}  (ok={same_shape})")
-    print(f"  dtype: {img.dtype} -> {back.dtype}  (ok={same_dtype})")
-    print(f"  pixels equal: {same_pixels}")
+    for seg in iter_segments(band_img, seg_h=seg_h, seg_w=seg_w, band_index=0):
+        sv = segment_view(band_img, seg)            
+        seg_src = sv.copy()                          
 
-def segmentation_demo(input_path: str, seg_h: int, seg_w: int, blk_h: int | None, blk_w: int | None, band: int) -> None:
-    img = read_bmp(input_path)
-    print(f"[Input] shape={img.shape}, dtype={img.dtype}")
+        # Forward -> Inverse on this segment
+        coeffs = dwt97m_forward_2d(seg_src, levels=levels)
+        seg_rec = dwt97m_inverse_2d(coeffs, levels=levels)
 
-    # If RGB, show quick split example (not required to process)
-    if img.ndim == 3 and img.shape[2] == 3:
-        bands = split_rgb_to_bands(img)
-        print("  RGB detected, processing band index:", band)
-        assert 0 <= band < 3
-    else:
-        band = 0
+        # Write back
+        recon[seg.y:seg.y+seg.h, seg.x:seg.x+seg.w] = seg_rec
 
-    total_pixels = 0
-    seg_count = 0
-    blk_count = 0
+        # Verify per-segment identity
+        ok = np.array_equal(seg_src, seg_rec)
+        all_ok &= ok
 
-    for seg in iter_segments(img, seg_h=seg_h, seg_w=seg_w, band_index=band):
-        seg_count += 1
-        sv = segment_view(img, seg)  # (h,w)
-        total_pixels += sv.size
+    return recon, all_ok
 
-        if blk_h and blk_w:
-            for blk in iter_blocks(seg.h, seg.w, blk_h=blk_h, blk_w=blk_w):
-                blk_count += 1
-                bv = block_view(sv, blk)
-                assert bv.shape == (blk.h, blk.w)
-
-    H, W = img.shape[:2]
-    print("[Segmentation]")
-    print(f"  segments: {seg_count}")
-    if blk_h and blk_w:
-        print(f"  blocks:   {blk_count} (inside all segments)")
-    print(f"  coverage: {total_pixels} of {H*W} pixels  (ok={total_pixels == H*W})")
 
 def main():
-    ap = argparse.ArgumentParser(description="CCSDS 122: I/O + Segmentation smoke tests")
-    ap.add_argument("input_bmp", help="Path to an 8-bit or 16-bit grayscale BMP, or 8-bit RGB BMP")
-    ap.add_argument("--out-bmp", default="roundtrip.bmp", help="Where to write the roundtrip BMP")
-    ap.add_argument("--seg", default="128x128", help="Segment size HxW (e.g., 128x128)")
-    ap.add_argument("--blk", default=None, help="Optional block size HxW (e.g., 32x32)")
-    ap.add_argument("--band", type=int, default=0, help="Band index for RGB (0=R,1=G,2=B)")
+    ap = argparse.ArgumentParser(description="CCSDS-122 (lossless path): I/O + segmentation + 9/7M DWT round-trip")
+    ap.add_argument("input_bmp", help="8-bit/16-bit grayscale BMP or 8-bit RGB BMP")
+    ap.add_argument("--seg", default="128x128", help="Segment size HxW (default: 128x128)")
+    ap.add_argument("--levels", type=int, default=3, help="DWT levels (default: 3)")
+    ap.add_argument("--rgb", choices=["auto", "band0", "band1", "band2", "all"], default="auto",
+                    help="RGB handling: auto (detect & use band0), band{0,1,2}, or all (process all bands)")
+    ap.add_argument("--save-recon", default=None, help="Optional path to save reconstructed BMP")
     args = ap.parse_args()
 
     seg_h, seg_w = map(int, args.seg.lower().split("x"))
-    if args.blk:
-        blk_h, blk_w = map(int, args.blk.lower().split("x"))
+    img = read_bmp(args.input_bmp)
+
+    print(f"[Input] shape={img.shape}, dtype={img.dtype}")
+    if img.ndim == 2:
+        # Grayscale
+        recon, ok = _process_band_roundtrip(img, seg_h, seg_w, args.levels)
+        img_out = recon
+        print(f"[Round-trip] grayscale: {ok}  (global_equal={np.array_equal(img, recon)})")
+
     else:
-        blk_h = blk_w = None
+        # RGB: decide which bands to process
+        bands = split_rgb_to_bands(img)  # views [R,G,B]
+        out = img.copy()
 
-    print("== Running I/O roundtrip test ==")
-    roundtrip_test(args.input_bmp, args.out_bmp)
+        targets = []
+        if args.rgb == "auto":
+            targets = [0]
+        elif args.rgb == "all":
+            targets = [0, 1, 2]
+        elif args.rgb.startswith("band"):
+            targets = [int(args.rgb[-1])]
+        else:
+            print(f"Unexpected --rgb value: {args.rgb}", file=sys.stderr)
+            sys.exit(2)
 
-    print("\n== Running segmentation demo ==")
-    segmentation_demo(args.input_bmp, seg_h, seg_w, blk_h, blk_w, args.band)
+        global_ok = True
+        for b in targets:
+            print(f"[Processing] RGB band {b}")
+            recon_b, ok = _process_band_roundtrip(bands[b], seg_h, seg_w, args.levels)
+            out[..., b] = recon_b
+            global_ok &= ok
+            print(f"  band{b} per-segment round-trip: {ok}  (band_equal={np.array_equal(bands[b], recon_b)})")
 
-    if os.path.exists(args.out_bmp):
-        print(f"\nSaved roundtrip image to: {args.out_bmp}")
+        img_out = out
+        print(f"[Round-trip] RGB (processed {targets}): {global_ok}  (global_equal={np.array_equal(img, out)})")
+
+    if args.save_recon:
+        write_bmp(args.save_recon, img_out)
+        print(f"[Saved] reconstructed image -> {args.save_recon}")
+
 
 if __name__ == "__main__":
     main()

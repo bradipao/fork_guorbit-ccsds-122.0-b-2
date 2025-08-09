@@ -3,10 +3,9 @@ from dataclasses import dataclass
 from typing import Iterator, List
 import numpy as np
 from PIL import Image
+import os
 
-# ---------------------------
 # Image I/O (BMP <-> ndarray)
-# ---------------------------
 
 def read_bmp(path: str) -> np.ndarray:
     """
@@ -29,32 +28,38 @@ def read_bmp(path: str) -> np.ndarray:
 
 def write_bmp(path: str, arr: np.ndarray) -> None:
     """
-    Write numpy array to BMP:
+    Write numpy array to BMP into an 'output' subfolder:
       - (H,W) uint8  -> 'L'
       - (H,W) uint16 -> 'I;16'
       - (H,W,3) uint8 -> 'RGB'
     """
+    # ensure output directory exists
+    out_dir = "output"
+    os.makedirs(out_dir, exist_ok=True)
+
+    # build output path
+    filename = os.path.basename(path)
+    out_path = os.path.join(out_dir, filename)
+
     if arr.ndim == 2 and arr.dtype == np.uint8:
-        Image.fromarray(arr, mode="L").save(path, format="BMP")
+        Image.fromarray(arr, mode="L").save(out_path, format="BMP")
     elif arr.ndim == 2 and arr.dtype == np.uint16:
-        Image.fromarray(arr, mode="I;16").save(path, format="BMP")
+        Image.fromarray(arr, mode="I;16").save(out_path, format="BMP")
     elif arr.ndim == 3 and arr.shape[2] == 3 and arr.dtype == np.uint8:
-        Image.fromarray(arr, mode="RGB").save(path, format="BMP")
+        Image.fromarray(arr, mode="RGB").save(out_path, format="BMP")
     else:
         raise ValueError(f"Unsupported shape/dtype for BMP: {arr.shape}, {arr.dtype}")
 
-# -------------------------------------------------
 # Deterministic segmentation (segments & sub-blocks)
-# -------------------------------------------------
 
 @dataclass(frozen=True)
 class Block:
-    y: int; x: int; h: int; w: int  # segment-local coords
+    y: int; x: int; h: int; w: int  
 
 @dataclass(frozen=True)
 class Segment:
-    y: int; x: int; h: int; w: int  # image-global coords
-    band_index: int                 # 0 for gray; 0/1/2 for R/G/B
+    y: int; x: int; h: int; w: int  
+    band_index: int                 
 
 def iter_segments(img: np.ndarray, seg_h: int, seg_w: int, band_index: int = 0) -> Iterator[Segment]:
     """
@@ -98,9 +103,7 @@ def block_view(seg_view_arr: np.ndarray, blk: Block) -> np.ndarray:
     """Zero-copy view of a block within a segment view."""
     return seg_view_arr[blk.y:blk.y+blk.h, blk.x:blk.x+blk.w]
 
-# -----------------------
 # Convenience for bands
-# -----------------------
 
 def split_rgb_to_bands(img_rgb: np.ndarray) -> List[np.ndarray]:
     """Split (H,W,3) uint8 into [R,G,B] views."""
