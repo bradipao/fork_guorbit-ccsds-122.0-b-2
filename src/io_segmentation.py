@@ -1,3 +1,4 @@
+# Input/Output and Segmentation
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator, List
@@ -110,3 +111,47 @@ def split_rgb_to_bands(img_rgb: np.ndarray) -> List[np.ndarray]:
     if img_rgb.ndim != 3 or img_rgb.shape[2] != 3 or img_rgb.dtype != np.uint8:
         raise ValueError("Expected (H,W,3) uint8 RGB image")
     return [img_rgb[..., 0], img_rgb[..., 1], img_rgb[..., 2]]
+
+class BitWriter:
+    def __init__(self):
+        self.buf = bytearray()
+        self.acc = 0
+        self.bits = 0
+    def write_bits(self, value: int, nbits: int):
+        # value is assumed 0 <= value < (1<<nbits)
+        while nbits > 0:
+            take = min(8 - self.bits, nbits)
+            self.acc <<= take
+            self.acc |= (value >> (nbits - take)) & ((1 << take) - 1)
+            self.bits += take
+            nbits -= take
+            if self.bits == 8:
+                self.buf.append(self.acc & 0xFF)
+                self.acc = 0; self.bits = 0
+    def align_zero(self):
+        if self.bits:
+            self.acc <<= (8 - self.bits)
+            self.buf.append(self.acc & 0xFF)
+            self.acc = 0; self.bits = 0
+    def to_bytes(self) -> bytes:
+        self.align_zero()
+        return bytes(self.buf)
+
+class BitReader:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.i = 0
+        self.acc = 0
+        self.bits = 0
+    def read_bits(self, nbits: int) -> int:
+        v = 0
+        while nbits > 0:
+            if self.bits == 0:
+                if self.i >= len(self.data): raise EOFError("bitstream exhausted")
+                self.acc = self.data[self.i]; self.i += 1
+                self.bits = 8
+            take = min(self.bits, nbits)
+            v = (v << take) | ((self.acc >> (self.bits - take)) & ((1 << take) - 1))
+            self.bits -= take
+            nbits -= take
+        return v
