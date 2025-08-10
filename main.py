@@ -27,7 +27,7 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
     Returns (reconstructed_band, all_ok)
     """
     # If you enable official subband weights, set to 3 (Table 3-4). Keep 0 for identity weights.
-    BITSHIFT_LL3 = 0
+    BITSHIFT_LL3 = 3
 
     H, W = band_img.shape
     recon = np.empty_like(band_img)
@@ -91,12 +91,14 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
             enc_state.note_new(b, rep0.newly_sig_coords)
 
             # Stage 2: refinement for newly significant at this plane
-            pl2 = encode_stage2_plane(coeffs_w, rep0.newly_sig_coords, b)
+            pl2 = encode_stage2_plane(coeffs_w, rep0.newly_sig_coords, b,
+                          levels=levels, shape_hint=(Hc, Wc))
             pl2_bytes_list.append(pl2)
 
             # Stage 3: refinement for previously significant (from higher planes)
             prev_coords_enc = enc_state.compute_prev_for_plane(b)
-            pl3 = encode_stage3_plane(coeffs_w, prev_coords_enc, b)
+            pl3 = encode_stage3_plane(coeffs_w, prev_coords_enc, b,
+                          levels=levels, shape_hint=(Hc, Wc))
             pl3_bytes_list.append(pl3)
 
             # Stage 4: sign bits for newly significant
@@ -118,11 +120,11 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
             dec_state.note_new(b, newly_dec)
 
             # Stage 2
-            _ = decode_stage2_plane((Hc, Wc), newly_dec, b, pl2_bytes_list[idx])
+            _ = decode_stage2_plane((Hc, Wc), newly_dec, b, pl2_bytes_list[idx], levels=levels)
 
             # Stage 3
             prev_coords_dec = dec_state.compute_prev_for_plane(b)
-            _ = decode_stage3_plane((Hc, Wc), prev_coords_dec, b, pl3_bytes_list[idx])
+            _ = decode_stage3_plane((Hc, Wc), prev_coords_dec, b, pl3_bytes_list[idx], levels=levels)
 
             # Stage 4
             _signs = decode_stage4_plane((Hc, Wc), newly_dec, pl4_bytes_list[idx])
