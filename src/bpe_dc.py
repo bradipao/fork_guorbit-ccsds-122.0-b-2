@@ -18,7 +18,7 @@ class DCEncodeInfo:
 
 
 def _bitdepth_dc(dc_vals: np.ndarray) -> int:
-    # two's complement width (eq. 12, §4.2.2.2.4)
+    # two's complement width 
     if dc_vals.size == 0:
         return 1
     neg = dc_vals < 0
@@ -31,7 +31,7 @@ def _bitdepth_dc(dc_vals: np.ndarray) -> int:
 
 def _bitdepth_ac(all_coeffs: np.ndarray, ll_rect, levels: int) -> int:
     # BitDepthAC is max over blocks of BitDepthAC_Blockm; this equals the max magnitude
-    # over *all AC coefficients* in the segment (since it's a max-of-maxes). (§4.2.2.2.5)
+    # over *all AC coefficients* in the segment (since it's a max-of-maxes).
     mask = np.ones(all_coeffs.shape, dtype=bool)
     # zero-out LL_top area so it's not counted as AC
     y,x,h,w = ll_rect.y, ll_rect.x, ll_rect.h, ll_rect.w
@@ -135,9 +135,7 @@ def _select_k_heur(deltas: np.ndarray, N: int, J: int) -> int | None:
         k -= 1
     return max(k, 0)
 
-# ------------------------
 # Public API
-# ------------------------
 
 def encode_dc(coeffs: np.ndarray, levels: int, bitshift_ll3: int = 0,
               code_sel: CodeSel = "opt") -> Tuple[bytes, DCEncodeInfo]:
@@ -154,8 +152,8 @@ def encode_dc(coeffs: np.ndarray, levels: int, bitshift_ll3: int = 0,
     BitDepthDC = _bitdepth_dc(dc)
     BitDepthAC = _bitdepth_ac(coeffs, LL, levels)
     qprime = _table_4_8_qprime(BitDepthDC, BitDepthAC)
-    q = max(qprime, bitshift_ll3)  # §4.3.1.3
-    N = max(BitDepthDC - q, 1)     # eq. 17
+    q = max(qprime, bitshift_ll3)  
+    N = max(BitDepthDC - q, 1)   
 
     # quantized c' (eq. 16)
     cprime = (dc >> q).astype(np.int64)  # floor division since nonnegative shift; safe for negatives in Python

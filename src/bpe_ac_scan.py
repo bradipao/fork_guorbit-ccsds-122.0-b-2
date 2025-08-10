@@ -1,4 +1,3 @@
-# ccsds122/bpe_ac_scan.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Iterable

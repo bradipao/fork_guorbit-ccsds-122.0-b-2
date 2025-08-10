@@ -124,7 +124,7 @@ def encode_ac_bitdepths(coeffs: np.ndarray, levels: int, *, code_sel: CodeSel="o
     N = int(np.ceil(np.log2(1 + BitDepthAC)))  # eq. 21
     xmin, xmax = 0, (1 << N) - 1
 
-    # Differencing + mapping just like §4.3.2 but over nonnegative numbers
+    # Differencing + mapping over nonnegative numbers
     sizes = _gaggle_sizes_ac(S)
     bw = BitWriter()
     idx = 0

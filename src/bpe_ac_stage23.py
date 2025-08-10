@@ -1,4 +1,3 @@
-# ccsds122/bpe_ac_stage23.py
 from __future__ import annotations
 from typing import List, Tuple
 import numpy as np
@@ -39,7 +38,7 @@ def decode_stage2_plane(shape: Tuple[int,int],
             out[y, x] = 1
     return out
 
-# ---- Stage 3: refinement for PREVIOUSLY significant (from earlier planes) ----
+# ---- Stage 3: refinement for PREVIOUSLY significant ----
 def encode_stage3_plane(coeffs: np.ndarray,
                         prev_sig_coords: List[Tuple[int,int]],
                         b: int) -> bytes:

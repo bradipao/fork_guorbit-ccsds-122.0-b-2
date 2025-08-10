@@ -1,4 +1,3 @@
-# ccsds122/bpe_state.py
 import numpy as np
 
 class SigRefState:
