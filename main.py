@@ -8,10 +8,18 @@ from src.io_segmentation import (
     iter_segments, segment_view,
     split_rgb_to_bands
 )
+
 from src.dwt import (
     dwt97m_forward_2d
 )
-from src.idwt import dwt97m_inverse_2d
+
+from src.idwt import (
+    dwt97m_inverse_2d
+)
+
+from src.utils import (
+    apply_subband_weights, undo_subband_weights
+)
 
 
 def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels: int) -> tuple[np.ndarray, bool]:
@@ -29,7 +37,11 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
 
         # Forward -> Inverse on this segment
         coeffs = dwt97m_forward_2d(seg_src, levels=levels)
-        seg_rec = dwt97m_inverse_2d(coeffs, levels=levels)
+        
+        coeffs_w = apply_subband_weights(coeffs, levels=levels)
+        coeffs_u = undo_subband_weights(coeffs_w, levels=levels)
+
+        seg_rec = dwt97m_inverse_2d(coeffs_u, levels=levels)
 
         # Write back
         recon[seg.y:seg.y+seg.h, seg.x:seg.x+seg.w] = seg_rec
