@@ -1,8 +1,10 @@
 #Subband Indexing Helper
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Iterable
 import numpy as np
+
+from src.io_segmentation import BitReader
 
 @dataclass(frozen=True)
 class BandRect:
@@ -67,3 +69,56 @@ def undo_subband_weights(coeffs_w: np.ndarray, levels: int,
     Inverse of apply_subband_weights: multiply by den/name over num/name.
     """
     return apply_subband_weights(coeffs_w, levels, num=den, den=num)
+
+def tb_of(v: int, b: int, bitshift_gamma: int) -> int:
+    """
+    tb(x) per §4.5.2:
+      0 if |x| < 2^b
+      1 if 2^b ≤ |x| < 2^(b+1)
+      2 if 2^(b+1) ≤ |x|
+     -1 if b < BitShift(Γ)   (forced zero at this plane due to subband scaling)
+    """
+    if b < bitshift_gamma:
+        return -1
+    a = abs(int(v))
+    if a < (1 << b):            return 0
+    if a < (1 << (b+1)):        return 1
+    return 2
+
+def bit_b_of(v: int, b: int) -> int:
+    """The b-th magnitude bit (MSB=high planes). Used for typesb[...] when tb ∈ {0,1}."""
+    return (abs(int(v)) >> b) & 1
+
+def subband_bitshift_lookup(H: int, W: int, levels: int, shifts: dict[str,int]):
+    """
+    Returns a function (y,x) -> BitShift(Γ) using your shift table (e.g., Table 3-4).
+    Pass in your actual shifts dict like {'LL3':3,'HL3':3,'LH3':3,'HH3':3,'HL2':2,...}.
+    """
+    R = subband_rects(H, W, levels)
+    def lookup(y: int, x: int) -> int:
+        for name, rect in R.items():
+            if rect.y <= y < rect.y+rect.h and rect.x <= x < rect.x+rect.w:
+                return shifts[name]
+        raise RuntimeError("coord not in any subband")
+    return lookup
+
+def tmax(values: Iterable[int]) -> int:
+    """max over tb values; empty -> -1 (null)."""
+    m = -1
+    for v in values:
+        if v > m: m = v
+    return m
+
+def _read_option_id(br: BitReader, N: int) -> int:
+    """Read per-gaggle option ID for pattern size N (Table 4-18)."""
+    if N == 2:
+        b = br.read_bits(1)
+        return 1 if b == 1 else 0
+    # N == 3 or 4 → 2 ID bits
+    bits = (br.read_bits(1) << 1) | br.read_bits(1)
+    if N == 3:
+        # 00->0, 01->1, 11->3(uncoded); 10 not used
+        return 0 if bits == 0b00 else 1 if bits == 0b01 else 3
+    else:
+        # N==4: 00->0, 01->1, 10->2, 11->3(uncoded)
+        return bits  # 0..3

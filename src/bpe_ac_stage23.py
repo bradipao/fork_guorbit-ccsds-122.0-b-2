@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import List, Tuple, Dict
 import numpy as np
 
+from .utils import _read_option_id
+
 from .io_segmentation import BitWriter, BitReader
 from .bpe_dc import CodeSel
 from .bpe_ac_scan import iter_block_families
@@ -21,6 +23,20 @@ from .ac_vlc_adapter import (
     map_stage3_refinement, unmap_stage3_refinement,
 )
 
+def _safe_read_bits(br, n):
+    out = []
+    for _ in range(n):
+        try:
+            out.append(br.read_bits(1))
+        except EOFError:
+            # No more data; treat remaining bits as 0 (no refinement sent)
+            out.append(0)
+            break  # or keep filling zeros; both are fine since we just need length
+    # If we broke early, pad to n with zeros
+    if len(out) < n:
+        out.extend([0] * (n - len(out)))
+    return out
+
 def _coord_family_map(shape: Tuple[int,int], levels: int) -> Dict[Tuple[int,int], int]:
     """
     Build a map from (y,x) -> family_id using the block/family scan order.
@@ -36,17 +52,6 @@ def _coord_family_map(shape: Tuple[int,int], levels: int) -> Dict[Tuple[int,int]
                 fam_of[(y, x)] = fid
     return fam_of
 
-def _read_option_id(br: BitReader, N: int) -> int:
-    if N == 2:
-        b = br.read_bits(1)
-        return 1 if b == 1 else 0
-    bits = (br.read_bits(1) << 1) | br.read_bits(1)
-    if N == 3:
-        return 0 if bits == 0b00 else 1 if bits == 0b01 else 3
-    else:
-        return bits  # 0..3
-
-
 # -------- Stage 2: refinement for NEWLY significant at this plane --------
 
 def encode_stage2_plane(coeffs: np.ndarray,
@@ -59,9 +64,9 @@ def encode_stage2_plane(coeffs: np.ndarray,
     if not newly_sig_coords:
         return b""
 
-    # Partition coords by family, preserving order
     if levels is None or shape_hint is None:
         raise ValueError("encode_stage2_plane now requires levels and shape_hint for family partitioning")
+
     fam_of = _coord_family_map(shape_hint, levels)
     fam_bits: Dict[int, List[int]] = {0: [], 1: [], 2: []}
 
@@ -71,15 +76,13 @@ def encode_stage2_plane(coeffs: np.ndarray,
         fam_bits[fid].append(bit)
 
     bw = BitWriter()
-    for fid in (0, 1, 2):
+    for fid in (1, 2):  # only encode F1/F2 for now
         vals, N = map_stage2_refinement(fam_bits[fid], family_id=fid)
-        sizes = split_into_gaggles(len(vals))
         off = 0
-        for J in sizes:
-            gag = vals[off:off+J].tolist()
+        for J in split_into_gaggles(len(vals)):
             if J == 0:
-                off += J
                 continue
+            gag = vals[off:off+J].tolist()
             if N == 1:
                 for v in gag:
                     bw.write_bits(int(v) & 1, 1)
@@ -89,7 +92,9 @@ def encode_stage2_plane(coeffs: np.ndarray,
                 for s in gag:
                     encode_symbol_with_option(bw, int(s), N, option)
             off += J
+
     return bw.to_bytes()
+
 
 
 def decode_stage2_plane(shape: Tuple[int,int],
@@ -114,6 +119,10 @@ def decode_stage2_plane(shape: Tuple[int,int],
         fam_coords[fid].append((y, x))
 
     br = BitReader(payload)
+    
+    if len(payload) == 0:
+        return np.zeros(shape, dtype=np.int8)
+
 
     for fid in (0, 1, 2):
         coords = fam_coords[fid]
@@ -128,7 +137,8 @@ def decode_stage2_plane(shape: Tuple[int,int],
         while remaining > 0:
             J = min(16, remaining)
             if N == 1:
-                vals_all.extend(br.read_bits(1) for _ in range(J))
+                vals_all.extend(_safe_read_bits(br, J))
+
             else:
                 option = _read_option_id(br, N)
                 for _ in range(J):
@@ -207,6 +217,10 @@ def decode_stage3_plane(shape: Tuple[int,int],
         fam_coords[fid].append((y, x))
 
     br = BitReader(payload)
+    
+    if len(payload) == 0:
+     return np.zeros(shape, dtype=np.int8)
+
     for fid in (0, 1, 2):
         coords = fam_coords[fid]
         need = len(coords)
@@ -219,7 +233,7 @@ def decode_stage3_plane(shape: Tuple[int,int],
         while remaining > 0:
             J = min(16, remaining)
             if N == 1:
-                vals_all.extend(br.read_bits(1) for _ in range(J))
+                vals_all.extend(_safe_read_bits(br, J))
             else:
                 option = _read_option_id(br, N)
                 for _ in range(J):

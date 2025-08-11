@@ -3,7 +3,7 @@ import argparse
 import sys
 import numpy as np
 
-from src.bpe_ac_stage23 import decode_stage2_plane, decode_stage3_plane, encode_stage2_plane, encode_stage3_plane
+from src.bpe_ac_stage23 import _coord_family_map, decode_stage2_plane, decode_stage3_plane, encode_stage2_plane, encode_stage3_plane
 from src.bpe_state import SigRefState
 from src.bpe_ac_stage4 import decode_stage4_plane, encode_stage4_plane
 from src.io_segmentation import read_bmp, write_bmp, iter_segments, segment_view, split_rgb_to_bands
@@ -26,7 +26,7 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
       inverse weights -> inverse DWT
     Returns (reconstructed_band, all_ok)
     """
-    # If you enable official subband weights, set to 3 (Table 3-4). Keep 0 for identity weights.
+    # 3 for subband weight, 0 for identity weights
     BITSHIFT_LL3 = 3
 
     H, W = band_img.shape
@@ -102,9 +102,17 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
             pl3_bytes_list.append(pl3)
 
             # Stage 4: sign bits for newly significant
-            pl4 = encode_stage4_plane(coeffs_w, rep0.newly_sig_coords)
-            pl4_bytes_list.append(pl4)
+            fam_of = _coord_family_map((Hc, Wc), levels)
 
+            newly_stage4 = [(y, x) for (y, x) in rep0.newly_sig_coords if fam_of[(y, x)] in (1, 2)]
+            pl4 = encode_stage4_plane(coeffs_w, newly_stage4)
+            pl4_bytes_list.append(pl4)
+            
+            expected_signs_enc = len(newly_stage4)
+            actual_bits_enc = len(pl4) * 8
+            delta = actual_bits_enc - expected_signs_enc
+            if not (0 <= delta <= 7):
+                print(f"[Stage4-ENC] WARN: wrote {actual_bits_enc} bits, expected {expected_signs_enc} (Δ={delta})")
         # ---- Decode sweep (MSB -> LSB), consuming exactly the same payloads ----
         for idx, b in enumerate(plane_indices):
             # Stage 0
@@ -127,7 +135,19 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
             _ = decode_stage3_plane((Hc, Wc), prev_coords_dec, b, pl3_bytes_list[idx], levels=levels)
 
             # Stage 4
-            _signs = decode_stage4_plane((Hc, Wc), newly_dec, pl4_bytes_list[idx])
+            newly_dec_stage4 = [(y, x) for (y, x) in newly_dec if fam_of[(y, x)] in (1, 2)]
+            payload4 = pl4_bytes_list[idx]
+            expected_signs_dec = len(newly_dec_stage4)
+            actual_bits_dec = len(payload4) * 8
+            delta_dec = actual_bits_dec - expected_signs_dec
+            
+            if delta_dec < 0:
+                print(f"[Stage4-DEC] WARN: payload short by {-delta_dec} bits; will pad zeros")
+            elif delta_dec > 7:
+                print(f"[Stage4-DEC] WARN: payload has {delta_dec} trailing bits beyond a byte pad")
+                
+            _signs = decode_stage4_plane((Hc, Wc), newly_dec_stage4, payload4)
+
             # (optional) accumulate a sign map for additional checks
 
         # Encoder/decoder significance maps must match after Stage 0–4 scaffolds

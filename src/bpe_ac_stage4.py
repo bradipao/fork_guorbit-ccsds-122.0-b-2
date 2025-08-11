@@ -6,6 +6,16 @@ from .bpe_dc import CodeSel
 from .gaggle_vlc import encode_gaggle, decode_gaggle
 from .ac_vlc_adapter import split_into_gaggles
 
+def _safe_read_bits(br, n: int) -> np.ndarray:
+    out = []
+    for _ in range(n):
+        try:
+            out.append(br.read_bits(1))
+        except EOFError:
+            out.append(0)  # pad missing bits with 0
+    return np.asarray(out, dtype=np.int64)
+
+
 def encode_stage4_plane(coeffs: np.ndarray,
                         newly_sig_coords: List[Tuple[int,int]],
                         code_sel: CodeSel = "opt") -> bytes:
@@ -27,24 +37,26 @@ def encode_stage4_plane(coeffs: np.ndarray,
         off += J
     return bw.to_bytes()
 
-def decode_stage4_plane(shape: Tuple[int,int],
-                        newly_sig_coords: List[Tuple[int,int]],
-                        payload: bytes,
-                        code_sel: CodeSel = "opt") -> np.ndarray:
-    """
-    Returns an int8 plane with +1 for non-negative, -1 for negative at 'newly' coords.
-    """
+def decode_stage4_plane(shape, newly_sig_coords, payload):
+
+    H, W = shape
     out = np.zeros(shape, dtype=np.int8)
-    if not newly_sig_coords:
-        return out
+
     br = BitReader(payload)
-    vals_all: list[int] = []
-    remaining = len(newly_sig_coords)
-    while remaining > 0:
-        J = min(16, remaining)
-        arr = decode_gaggle(br, count=J, N=1, first_gaggle=False)  # N=1 here
-        vals_all.extend(list(arr))
-        remaining -= J
-    for (y, x), v in zip(newly_sig_coords, vals_all):
-        out[y, x] = -1 if (v & 1) == 1 else +1
+    if len(payload) == 0 or len(newly_sig_coords) == 0:
+        return out
+
+    # decode in gaggles of 16, but use _safe_read_bits to avoid EOF
+    idx = 0
+    total = len(newly_sig_coords)
+    while idx < total:
+        J = min(16, total - idx)
+        # N=1 here (raw signs)
+        arr = _safe_read_bits(br, J)
+        # apply signs (arr[k] is the sign bit for coord idx+k)
+        for k in range(J):
+            y, x = newly_sig_coords[idx + k]
+            out[y, x] = 1 if arr[k] else 0
+        idx += J
+
     return out

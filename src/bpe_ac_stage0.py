@@ -1,13 +1,21 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, cast
 import numpy as np
 
-from src.utils import subband_rects
+from src.ac_stage0_stream import encode_stage0_combined
 
+from .utils import subband_bitshift_lookup, subband_rects, _read_option_id
 from .io_segmentation import BitWriter, BitReader
 from .bpe_dc import CodeSel
 from .bpe_ac_scan import iter_block_families
+from .ac_word_builder import build_stage_words_for_block
+from .ac_word_mapping import WordKind, infer_N_for_length, symbol_to_word, word_to_symbol
+from .ac_vlc_tables import (
+    best_option_for_symbols, write_id_bits,
+    encode_symbol_with_option,
+)
+from .ac_vlc_adapter import split_into_gaggles, map_stage0_significance
 
 # NEW: use the spec VLC tables (Tables 4-15..4-18)
 from .ac_vlc_tables import (
@@ -65,22 +73,6 @@ def _dc_plane_decode(shape: Tuple[int,int], levels: int, b: int, q: int, payload
     out[y:y+h, x:x+w] = dc.reshape(h, w).astype(np.int32)
     return out
 
-
-def _read_option_id(br: BitReader, N: int) -> int:
-    """Read per-gaggle option ID for pattern size N (Table 4-18)."""
-    if N == 2:
-        b = br.read_bits(1)
-        return 1 if b == 1 else 0
-    # N == 3 or 4 → 2 ID bits
-    bits = (br.read_bits(1) << 1) | br.read_bits(1)
-    if N == 3:
-        # 00->0, 01->1, 11->3(uncoded); 10 not used
-        return 0 if bits == 0b00 else 1 if bits == 0b01 else 3
-    else:
-        # N==4: 00->0, 01->1, 10->2, 11->3(uncoded)
-        return bits  # 0..3
-
-
 def encode_stage0_plane(coeffs: np.ndarray,
                         levels: int,
                         bitdepth_ac_per_block: np.ndarray,
@@ -88,78 +80,16 @@ def encode_stage0_plane(coeffs: np.ndarray,
                         q: int,
                         significance_map: np.ndarray,
                         code_sel: CodeSel = "opt") -> Tuple[bytes, Stage0PlaneResult]:
-    """
-    Stage 0 for one plane b:
-      • DC plane bits when b < q (raw, 1 bit per DC sample)
-      • AC significance bits per-family, per gaggle (≤16), mapped then VLC-coded (Tables 4-15..4-18).
-    Updates significance_map in-place; returns payload and list of newly significant coords.
-    """
-    H, W = coeffs.shape
-    LL = subband_rects(H, W, levels)[f"LL{levels}"]
 
     # --- DC plane first (if any) ---
     dc_bytes = _dc_plane_encode(coeffs, levels, b, q)
     dc_bits_written = len(dc_bytes) * 8
 
-    # --- Collect AC candidate bits by FAMILY to respect family-dependent alphabets ---
-    fam_bits: Dict[int, List[int]] = {0: [], 1: [], 2: []}  # 0=F0,1=F1,2=F2
-    newly: List[Tuple[int,int]] = []
-    block = 0
-    for bf in iter_block_families(coeffs, levels):
-        if bitdepth_ac_per_block[block] <= b:
-            block += 1
-            continue
-        for fam in bf.families:
-            fid = fam.family_id
-            for (y, x) in fam.coords:
-                # skip LL area (DC)
-                if LL.y <= y < LL.y+LL.h and LL.x <= x < LL.x+LL.w:
-                    continue
-                # candidate only if not yet significant
-                if significance_map[y, x] == 0:
-                    bit = (abs(int(coeffs[y, x])) >> b) & 1
-                    fam_bits[fid].append(bit)
-                    if bit == 1:
-                        significance_map[y, x] = 1
-                        newly.append((y, x))
-        block += 1
-
-    # --- Map -> symbols & VLC per family sub-stream, gaggle by gaggle (≤16) ---
-    bw = BitWriter()
-    total_ac_bits = 0
-
-    for fid in (0, 1, 2):
-        vals, N = map_stage0_significance(fam_bits[fid], family_id=fid)  # → (symbols, N)
-        sizes = split_into_gaggles(len(vals))
-        off = 0
-        for J in sizes:
-            gaggle_syms = vals[off:off+J].tolist()
-            if J == 0:
-                off += J
-                continue
-
-            if N == 1:
-                # 1-bit uncoded, no ID per gaggle
-                for v in gaggle_syms:
-                    bw.write_bits(int(v) & 1, 1)
-                total_ac_bits += J
-            else:
-                # Choose the best option for this gaggle & write ID once (Table 4-18)
-                option = best_option_for_symbols(gaggle_syms, N)
-                write_id_bits(bw, N, option)
-                total_ac_bits += (1 if N == 2 else 2)
-
-                # Emit each codeword with the chosen option (Tables 4-15..4-17)
-                for s in gaggle_syms:
-                    encode_symbol_with_option(bw, int(s), N, option)
-                # track bit count approximately (for debugging); exact count available if needed
-
-            off += J
-
-    ac_payload = bw.to_bytes()
-    ac_bits_written = len(ac_payload) * 8  # total bits actually emitted
+    ac_payload, newly = encode_stage0_combined(coeffs, levels, b, bitdepth_ac_per_block, significance_map)
+    ac_bits_written = len(ac_payload) * 8
 
     return dc_bytes + ac_payload, Stage0PlaneResult(b, newly, dc_bits_written, ac_bits_written)
+
 
 
 def decode_stage0_plane(shape: Tuple[int,int],
@@ -169,77 +99,200 @@ def decode_stage0_plane(shape: Tuple[int,int],
                         q: int,
                         significance_map: np.ndarray,
                         payload: bytes,
-                        code_sel: CodeSel = "opt") -> Tuple[np.ndarray, List[Tuple[int,int]]]:
+                        code_sel: str = "opt") -> Tuple[np.ndarray, List[Tuple[int,int]]]:
     """
-    Global-per-family decode to match the encoder:
-      - build F0/F1/F2 candidate coord lists across the entire plane
-      - read symbols in 16-sized gaggles per family
-      - update significance_map and return 'newly' coords (in global scan order)
+    Stage 0 (combined stream) for plane b.
+      DC plane first (raw 1 bit per LL sample when b < q), then per block:
+        • typesP over parent candidates
+        • tranB (1 bit). If 0 -> skip descendants. If 1:
+            - tranD over families with D_i candidates (|D|=1 -> raw bit; |D|>=2 -> mapped)
+            - for families with tranD=1: typesCi with exact child candidate count
+            - tranG over the subset with tranD=1 and Gi candidates (|G*|=1 -> raw; else mapped)
+            - for each such family:
+                · tranHi over its non-empty groups (len 1 -> raw; len>=2 -> mapped; never "0000")
+                · for groups with tranHi=1: typesHij with that group's candidate count
+    Updates significance_map in-place; returns (dc_plane_array, newly_coords).
     """
     H, W = shape
     LL = subband_rects(H, W, levels)[f"LL{levels}"]
 
-    # Split DC vs AC from payload (DC plane is 1 bit per LL sample if b<q)
+    # ---- Split DC vs AC from payload ----
     LL_area = LL.h * LL.w
     dc_bits = LL_area if (b < q) else 0
     dc_bytes_len = (dc_bits + 7) // 8
     dc_bytes = payload[:dc_bytes_len]
     ac_bytes = payload[dc_bytes_len:]
 
-    # DC plane first
+    # DC plane (existing helper)
     dc_plane = _dc_plane_decode(shape, levels, b, q, dc_bytes)
 
-    # ---- Build global candidate coord lists per family (same order as encoder) ----
-    fam_coords: Dict[int, List[Tuple[int,int]]] = {0: [], 1: [], 2: []}
-    block = 0
-    for bf in iter_block_families(np.zeros(shape, dtype=np.int32), levels):
-        if bitdepth_ac_per_block[block] > b:
-            for fam in bf.families:
-                fid = fam.family_id
-                for (y, x) in fam.coords:
-                    # skip LL (DC)
-                    if LL.y <= y < LL.y + LL.h and LL.x <= x < LL.x + LL.w:
-                        continue
-                    if significance_map[y, x] == 0:
-                        fam_coords[fid].append((y, x))
-        block += 1
-
-    # ---- Read the three family streams exactly in F0, F1, F2 order ----
     br = BitReader(ac_bytes)
     newly: List[Tuple[int,int]] = []
 
-    for fid in (0, 1, 2):
-        coords = fam_coords[fid]
-        need = len(coords)
-        if need == 0:
-            continue
+    # ---------------- helpers ----------------
+    def _safe_read_bit() -> int:
+        try:
+            return br.read_bits(1)
+        except EOFError:
+            return 0  # robust bring-up
 
-        # Ask the mapper which pattern size N applies for this family at Stage 0
-        _, N = map_stage0_significance([], family_id=fid)
-
-        # Decode across the entire family list in 16-sized gaggles
-        vals_all: List[int] = []
-        remaining = need
-        idx = 0
-        while remaining > 0:
-            J = min(16, remaining)
-            if N == 1:
-                # raw bits, no ID
-                vals_all.extend(br.read_bits(1) for _ in range(J))
-            else:
-                # ID once per gaggle, then J codewords
-                option = _read_option_id(br, N)
-                for _ in range(J):
-                    vals_all.append(decode_symbol_with_option(br, N, option))
-            remaining -= J
-            idx += J
-
-        # Unmap -> bits and update significance map in the same order
-        bits_arr = unmap_stage0_significance(np.array(vals_all, dtype=np.int64), N, family_id=fid)
-        for (y, x), bit in zip(coords, bits_arr.tolist()):
-            if bit & 1:
+    def _apply_types_bits(bits: str, coords: List[Tuple[int,int]]) -> None:
+        for (y, x), ch in zip(coords, bits):
+            if ch == "1":
                 significance_map[y, x] = 1
                 newly.append((y, x))
 
-    return dc_plane, newly
+    def _read_types_word(kind: WordKind, length: int) -> str:
+        """
+        Read one mapped 'types*' word of known length.
+        length==0 -> "", length==1 -> raw bit, length>=2 -> mapped word (ID+code).
+        Robustness: if the decoded symbol isn't valid for this 'kind' (e.g., typesHij→sym=15),
+        fall back to an alternate kind for the same N to reconstruct the bitstring.
+        """
+        if length <= 0:
+            return ""
+        if length == 1:
+            return "1" if _safe_read_bit() else "0"
 
+        N = infer_N_for_length(kind, length)
+        try:
+            opt = _read_option_id(br, N)
+            sym = decode_symbol_with_option(br, N, opt)
+            try:
+                bits = symbol_to_word(int(sym), N, kind)
+            except (KeyError, ValueError):
+                # Fallback mapping family for this N:
+                #  - N=3: use 'typesP' (covers 0..7)
+                #  - N=4: use 'typesCi' (covers 0..15)
+                alt_kind: WordKind = cast(WordKind, ("typesP" if N == 3 else "typesCi"))
+                bits = symbol_to_word(int(sym), N, alt_kind)
+            # Clamp to expected length, just in case
+            if len(bits) > length:
+                bits = bits[:length]
+            elif len(bits) < length:
+                bits = bits + "0" * (length - len(bits))
+            return bits
+        except EOFError:
+            return "0" * length
+
+
+    def _read_tran_word(kind: WordKind, length: int) -> List[int]:
+        """
+        Read a transition word and return a list of 0/1 ints.
+        length==1 -> raw bit; length>=2 -> mapped.
+        Robustness: if the decoded symbol is not valid for `kind` (e.g., tranD symbol=7),
+        fall back to the 'other' family mapping to reconstruct the bit pattern.
+        """
+        if length <= 0:
+            return []
+        if length == 1:
+            return [_safe_read_bit()]
+
+        N = infer_N_for_length(kind, length)
+        try:
+            opt = _read_option_id(br, N)
+            sym = decode_symbol_with_option(br, N, opt)
+            try:
+                bits = symbol_to_word(int(sym), N, kind)
+            except (KeyError, ValueError):
+                # Fallback: use a mapping family that covers the full symbol set for this N.
+                # For N=3, the "other" column (typesP) covers 0..7; for N=4, use typesCi/ typesHij-family.
+                alt_kind: WordKind = cast(WordKind, ("typesP" if N == 3 else "typesCi"))
+                bits = symbol_to_word(int(sym), N, alt_kind)
+            # Clamp to expected length (defensive; mappings can yield same length already)
+            if len(bits) > length:
+                bits = bits[:length]
+            elif len(bits) < length:
+                bits = bits + "0" * (length - len(bits))
+            return [1 if c == "1" else 0 for c in bits]
+        except EOFError:
+            return [0] * length
+
+    # -----------------------------------------
+
+    block = 0
+    dummy = np.zeros(shape, dtype=np.int32)  # just for geometry in iter_block_families
+    for bf in iter_block_families(dummy, levels):
+        if bitdepth_ac_per_block[block] <= b:
+            block += 1
+            continue
+
+        # ---- Parents (one per family)
+        parents = [fam.coords[0] for fam in bf.families]
+        P = [(y, x) for (y, x) in parents if significance_map[y, x] == 0]
+        if len(P) > 0:
+            bitsP = _read_types_word(cast(WordKind, "typesP"), len(P))
+            _apply_types_bits(bitsP, P)
+
+        # ---- Build descendants candidate structure from current sig_map (mirror encoder)
+        Ci: Dict[int, List[Tuple[int,int]]] = {}
+        Gi_groups: Dict[int, List[List[Tuple[int,int]]]] = {}
+        for i in (0, 1, 2):
+            Ci[i] = [(y, x) for (y, x) in bf.families[i].coords[1:5] if significance_map[y, x] == 0]
+            G16 = bf.families[i].coords[5:]
+            groups = [G16[0:4], G16[4:8], G16[8:12], G16[12:16]]
+            Gi_groups[i] = [[(y, x) for (y, x) in g if significance_map[y, x] == 0] for g in groups]
+
+        # Families participating in D: any child or any non-empty grandchild group
+        D_indices = [i for i in (0, 1, 2) if (len(Ci[i]) > 0 or any(len(g) > 0 for g in Gi_groups[i]))]
+
+        # IMPORTANT: if there are no descendants at all, encoder wrote *no* tranB and nothing more
+        if len(D_indices) == 0:
+            block += 1
+            continue
+
+        # ---- tranB (raw 1 bit): 0 => all descendants Type-0 this plane, skip; 1 => continue
+        tranB = _safe_read_bit()
+        if tranB == 0:
+            block += 1
+            continue
+
+        # ---- tranD over D_indices (len 1 -> raw; len>=2 -> mapped)
+        tD_bits = _read_tran_word(cast(WordKind, "tranD"), len(D_indices))
+        # map to per-family flag
+        tD_flag: Dict[int, int] = {i: 0 for i in (0, 1, 2)}
+        for pos, i in enumerate(D_indices):
+            if pos < len(tD_bits):
+                tD_flag[i] = tD_bits[pos]
+
+        # For each family with tD=1, read typesCi with exact child candidate count
+        for i in D_indices:
+            if tD_flag[i] != 1:
+                continue
+            Lc = len(Ci[i])
+            if Lc > 0:
+                bitsCi = _read_types_word(cast(WordKind, "typesCi"), Lc)
+                _apply_types_bits(bitsCi, Ci[i])
+
+        # Families eligible for G: those with tD=1 AND any grandchild candidates
+        G_indices = [i for i in D_indices if tD_flag[i] == 1 and any(len(g) > 0 for g in Gi_groups[i])]
+
+        # ---- tranG over G_indices
+        tG_bits = _read_tran_word(cast(WordKind, "tranG"), len(G_indices))
+        tG_flag: Dict[int, int] = {i: 0 for i in (0, 1, 2)}
+        for pos, i in enumerate(G_indices):
+            if pos < len(tG_bits):
+                tG_flag[i] = tG_bits[pos]
+
+        # ---- For each such family with tranG==1, tranHi over its non-empty groups
+        for i in G_indices:
+            if tG_flag[i] != 1:
+                continue
+            # non-empty groups and their indices
+            group_idx = [j for j in range(4) if len(Gi_groups[i][j]) > 0]
+
+            # tranHi over those (len 1 -> raw; len>=2 -> mapped)
+            tHi_bits = _read_tran_word(cast(WordKind, "tranHi"), len(group_idx))
+
+            # For each flagged group, read typesHij with that group's candidate count
+            for pos, j in enumerate(group_idx):
+                if pos < len(tHi_bits) and tHi_bits[pos] == 1:
+                    Hij = Gi_groups[i][j]
+                    Lj = len(Hij)
+                    if Lj > 0:
+                        bitsHij = _read_types_word(cast(WordKind, "typesHij"), Lj)
+                        _apply_types_bits(bitsHij, Hij)
+                        
+        block += 1
+
+    return dc_plane, newly

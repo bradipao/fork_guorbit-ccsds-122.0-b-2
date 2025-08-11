@@ -98,3 +98,19 @@ def symbol_to_word(symbol: int, N: int, kind: WordKind) -> str:
             return _INV_T14_typesHij_tranHi[symbol]
         return _INV_T14_typesCi[symbol]
     raise ValueError("N must be 2, 3, or 4")
+
+def infer_N_for_length(kind: WordKind, length: int) -> int:
+    """
+    Return N∈{2,3,4} for a given word kind and bit-length.
+    These are exactly the table families you already encoded.
+    """
+    # Example (adjust to your exact table coding):
+    if kind == "typesP":
+        # parents can be 1..3 bits; N=1 for 1-bit, else 2 or 3
+        return 2 if length == 2 else 3
+    elif kind == "typesCi":
+        # children 1..4 bits
+        return 2 if length == 2 else (3 if length == 3 else 4)
+    else:  # "typesHij"
+        # grandchildren groups are 1..4 bits
+        return 2 if length == 2 else (3 if length == 3 else 4)
