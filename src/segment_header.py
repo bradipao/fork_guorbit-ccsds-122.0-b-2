@@ -11,7 +11,6 @@ class SegmentHeader:
     h: int
     w: int
     band: int
-    # Extend later with flags (integer DWT, bit depth, etc.)
 
     def encode(self) -> bytes:
         bw = BitWriter()

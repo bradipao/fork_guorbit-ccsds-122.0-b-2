@@ -1,12 +1,12 @@
 from typing import List, Tuple, Dict, cast
 import numpy as np
 
-# FIX: import _read_option_id from the VLC tables (decoder helpers below use it)
 from .ac_vlc_tables import best_option_for_symbols, decode_symbol_with_option, write_id_bits, encode_symbol_with_option
 from .bpe_ac_scan import iter_block_families
 from .ac_word_mapping import symbol_to_word, word_to_symbol, WordKind, infer_N_for_length
 from .io_segmentation import BitReader, BitWriter
-from .utils import subband_rects, _read_option_id
+from .shared import subband_rects
+from .utils import _read_option_id
 
 
 def _candidates_in(coords: List[Tuple[int,int]], sig_map: np.ndarray) -> List[Tuple[int,int]]:
@@ -203,7 +203,6 @@ def encode_stage0_combined(coeffs: np.ndarray,
     return bw.to_bytes(), newly
 
 
-# -------- Optional decode-side helpers (kept here if you import them elsewhere) --------
 
 def _apply_types_bits(bits: str,
                       coords: List[Tuple[int,int]],

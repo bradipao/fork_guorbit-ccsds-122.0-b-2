@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple, Iterable
 import numpy as np
-from .utils import subband_rects
+from .shared import subband_rects
 
 @dataclass(frozen=True)
 class FamilyCoords:

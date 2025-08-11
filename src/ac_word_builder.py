@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import List, Tuple, Dict
 import numpy as np
 from .bpe_ac_scan import iter_block_families
-from .utils import tb_of, bit_b_of, tmax, subband_bitshift_lookup, subband_rects
+from .utils import tb_of, bit_b_of, tmax, subband_bitshift_lookup
+from .shared import subband_rects
 
 # Each 'word' is (bits:str, kind:str, N:int). Kinds per Table 4-11 column names.
 Word = Tuple[str, str, int, int]
@@ -42,7 +43,7 @@ def build_stage_words_for_block(coeffs: np.ndarray,
     """
     words: List[Word] = []
 
-    # ---- Build P, Ci, Gi, Hij lists of coords for this block  ----
+    # Build P, Ci, Gi, Hij lists of coords for this block
     F = block_families.families  # tuple(F0, F1, F2)
     # Parents per spec P={p0,p1,p2}: one parent from each family (coords[0] of each family)
     P_coords = [F[0].coords[0], F[1].coords[0], F[2].coords[0]]
@@ -54,12 +55,11 @@ def build_stage_words_for_block(coeffs: np.ndarray,
         g = F[i].coords[5:]      # 16
         Hij_coords[i] = [ g[0:4], g[4:8], g[8:12], g[12:16] ]  # Hi0..Hi3
 
-    # ---- Compute tb for everything we may need ----
+    # Compute tb for everything we may need 
     tbP  = [tb_of(int(coeffs[y,x]), b, bs_lookup(y,x)) for (y,x) in P_coords]
     tbCi = {i: [tb_of(int(coeffs[y,x]), b, bs_lookup(y,x)) for (y,x) in Ci_coords[i]] for i in (0,1,2)}
     tbHij = {i: [[tb_of(int(coeffs[y,x]), b, bs_lookup(y,x)) for (y,x) in Hij_coords[i][j]] for j in range(4)] for i in (0,1,2)}
 
-    # Per §4.5.2 we also need tmax(Di), tmax(Gi), etc.
     # Di = {Ci, Gi}; Gi is union of all Hij groups
     tmax_D = {}
     tmax_G = {}
@@ -70,14 +70,14 @@ def build_stage_words_for_block(coeffs: np.ndarray,
     # B = {D0, D1, D2}
     tmax_B = tmax(tmax_D[i] for i in (0,1,2))
 
-    # ---- Stage 1: parents ----  (§4.5.3.1.8 a)
+    # Stage 1: parents 
     typesP = _types_word_for(P_coords, coeffs, b, bs_lookup)
     if _Nlen(typesP) >= 2:
         # 2 or 3 bits max per Table 4-11, kind "typesP"
         words.append((typesP, "typesP", len(typesP), -1))
-    # signsb[P] are raw bits (emit elsewhere in your Stage-1 code path)
+    # signsb[P] are raw bits 
 
-    # ---- Stage 2: children ----  (§4.5.3.1.8 b)
+    # Stage 2: children
     # 1) tranB
     # Definition (§4.5.3.1.7): tranB = null if it was 1 at any more significant plane;
     # else tword[{tmax(B)}]. Here we don't track history yet; at a single plane it is one bit if tmax(B) in {0,1}, else null.
@@ -103,7 +103,7 @@ def build_stage_words_for_block(coeffs: np.ndarray,
                     words.append((w, "typesCi", len(w), i))
                 # signsb[Ci] are raw; emit elsewhere from same coords when tb==1
 
-    # ---- Stage 3: grandchildren ----  (§4.5.3.1.8 c)
+    # Stage 3: grandchildren
     # If tranB == 0 or tmax(B) == -1 → omit Stage 3 entirely
     if not (tranB == "0" or tmax_B == -1):
         # 1) tranG = tword[{tmax(Gi) : i with tmax(Di) > 0 now or earlier}]

@@ -9,11 +9,12 @@ from src.bpe_ac_stage4 import decode_stage4_plane, encode_stage4_plane
 from src.io_segmentation import read_bmp, write_bmp, iter_segments, segment_view, split_rgb_to_bands
 from src.dwt import dwt97m_forward_2d
 from src.idwt import dwt97m_inverse_2d
-from src.utils import apply_subband_weights, subband_rects, undo_subband_weights
+from src.utils import compute_bitdepth_per_block, subband_rects, apply_subband_weights, undo_subband_weights
 from src.bpe_dc import encode_dc, decode_dc
 from src.bpe_ac_depth import encode_ac_bitdepths, decode_ac_bitdepths
 from src.bpe_ac_stage0 import encode_stage0_plane, decode_stage0_plane
 from src.bpe_dc import encode_dc, DCEncodeInfo, _bitdepth_ac
+from src.weights import dc_ll_top_shift, preset_ccsds122
 
 
 def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels: int) -> tuple[np.ndarray, bool]:
@@ -40,12 +41,19 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
         # ---- Forward DWT (signed coeffs) ----
         coeffs = dwt97m_forward_2d(seg_src, levels=levels).astype(np.int32)
 
-        # ---- Apply subband weights (identity unless you've enabled real weights) ----
-        coeffs_w = apply_subband_weights(coeffs, levels=levels)
+        #Weights on 
+        wt = preset_ccsds122(levels)
 
+        # ---- Apply subband weights (identity unless you've enabled real weights) ----
+        coeffs_w = apply_subband_weights(coeffs, levels, wt)
+
+        #Compute per-block bit-depths from weighted coeffs
+        depths = compute_bitdepth_per_block(coeffs_w, levels=levels)  
+        
         # ===== DC (quantized) encode/decode sanity check =====
+        q_shift = dc_ll_top_shift(levels, wt)
         payload_dc, dcinfo = encode_dc(
-            coeffs_w, levels=levels, bitshift_ll3=BITSHIFT_LL3, code_sel="opt"
+            coeffs_w, levels=levels, bitshift_ll3=q_shift, code_sel="opt"
         )
         Hc, Wc = coeffs_w.shape
         rec_cprime = decode_dc((Hc, Wc), levels=levels, payload=payload_dc, info=dcinfo)
@@ -154,7 +162,7 @@ def _process_band_roundtrip(band_img: np.ndarray, seg_h: int, seg_w: int, levels
         assert np.array_equal(enc_state.sig_map, dec_state.sig_map), "Sig map mismatch after Stage 0–4"
 
         # ---- Inverse weights -> inverse DWT (lossless image round-trip) ----
-        coeffs_u = undo_subband_weights(coeffs_w, levels=levels)
+        coeffs_u = undo_subband_weights(coeffs_w, levels, wt)
         seg_rec = dwt97m_inverse_2d(coeffs_u, levels=levels, out_dtype=seg_src.dtype)
 
         # Write back reconstructed segment & check identity

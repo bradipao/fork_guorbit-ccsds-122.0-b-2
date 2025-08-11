@@ -5,7 +5,8 @@ import numpy as np
 
 from src.ac_stage0_stream import encode_stage0_combined
 
-from .utils import subband_bitshift_lookup, subband_rects, _read_option_id
+from .utils import subband_bitshift_lookup, _read_option_id
+from .shared import subband_rects
 from .io_segmentation import BitWriter, BitReader
 from .bpe_dc import CodeSel
 from .bpe_ac_scan import iter_block_families
@@ -17,7 +18,6 @@ from .ac_vlc_tables import (
 )
 from .ac_vlc_adapter import split_into_gaggles, map_stage0_significance
 
-# NEW: use the spec VLC tables (Tables 4-15..4-18)
 from .ac_vlc_tables import (
     best_option_for_symbols,
     write_id_bits,
@@ -81,7 +81,7 @@ def encode_stage0_plane(coeffs: np.ndarray,
                         significance_map: np.ndarray,
                         code_sel: CodeSel = "opt") -> Tuple[bytes, Stage0PlaneResult]:
 
-    # --- DC plane first (if any) ---
+    # DC plane first (if any)
     dc_bytes = _dc_plane_encode(coeffs, levels, b, q)
     dc_bits_written = len(dc_bytes) * 8
 
@@ -116,7 +116,7 @@ def decode_stage0_plane(shape: Tuple[int,int],
     H, W = shape
     LL = subband_rects(H, W, levels)[f"LL{levels}"]
 
-    # ---- Split DC vs AC from payload ----
+    # Split DC vs AC from payload
     LL_area = LL.h * LL.w
     dc_bits = LL_area if (b < q) else 0
     dc_bytes_len = (dc_bits + 7) // 8
@@ -129,7 +129,7 @@ def decode_stage0_plane(shape: Tuple[int,int],
     br = BitReader(ac_bytes)
     newly: List[Tuple[int,int]] = []
 
-    # ---------------- helpers ----------------
+    # Move to Utils
     def _safe_read_bit() -> int:
         try:
             return br.read_bits(1)
@@ -208,8 +208,6 @@ def decode_stage0_plane(shape: Tuple[int,int],
         except EOFError:
             return [0] * length
 
-    # -----------------------------------------
-
     block = 0
     dummy = np.zeros(shape, dtype=np.int32)  # just for geometry in iter_block_families
     for bf in iter_block_families(dummy, levels):
@@ -217,14 +215,14 @@ def decode_stage0_plane(shape: Tuple[int,int],
             block += 1
             continue
 
-        # ---- Parents (one per family)
+        # Parents (one per family)
         parents = [fam.coords[0] for fam in bf.families]
         P = [(y, x) for (y, x) in parents if significance_map[y, x] == 0]
         if len(P) > 0:
             bitsP = _read_types_word(cast(WordKind, "typesP"), len(P))
             _apply_types_bits(bitsP, P)
 
-        # ---- Build descendants candidate structure from current sig_map (mirror encoder)
+        # Build descendants candidate structure from current sig_map (mirror encoder)
         Ci: Dict[int, List[Tuple[int,int]]] = {}
         Gi_groups: Dict[int, List[List[Tuple[int,int]]]] = {}
         for i in (0, 1, 2):
@@ -236,18 +234,18 @@ def decode_stage0_plane(shape: Tuple[int,int],
         # Families participating in D: any child or any non-empty grandchild group
         D_indices = [i for i in (0, 1, 2) if (len(Ci[i]) > 0 or any(len(g) > 0 for g in Gi_groups[i]))]
 
-        # IMPORTANT: if there are no descendants at all, encoder wrote *no* tranB and nothing more
+        # no descendants at all, encoder wrote *no* tranB and nothing more
         if len(D_indices) == 0:
             block += 1
             continue
 
-        # ---- tranB (raw 1 bit): 0 => all descendants Type-0 this plane, skip; 1 => continue
+        # tranB (raw 1 bit): 0 => all descendants Type-0 this plane, skip; 1 => continue
         tranB = _safe_read_bit()
         if tranB == 0:
             block += 1
             continue
 
-        # ---- tranD over D_indices (len 1 -> raw; len>=2 -> mapped)
+        # tranD over D_indices (len 1 -> raw; len>=2 -> mapped)
         tD_bits = _read_tran_word(cast(WordKind, "tranD"), len(D_indices))
         # map to per-family flag
         tD_flag: Dict[int, int] = {i: 0 for i in (0, 1, 2)}
@@ -267,14 +265,14 @@ def decode_stage0_plane(shape: Tuple[int,int],
         # Families eligible for G: those with tD=1 AND any grandchild candidates
         G_indices = [i for i in D_indices if tD_flag[i] == 1 and any(len(g) > 0 for g in Gi_groups[i])]
 
-        # ---- tranG over G_indices
+        # tranG over G_indices
         tG_bits = _read_tran_word(cast(WordKind, "tranG"), len(G_indices))
         tG_flag: Dict[int, int] = {i: 0 for i in (0, 1, 2)}
         for pos, i in enumerate(G_indices):
             if pos < len(tG_bits):
                 tG_flag[i] = tG_bits[pos]
 
-        # ---- For each such family with tranG==1, tranHi over its non-empty groups
+        # For each such family with tranG==1, tranHi over its non-empty groups
         for i in G_indices:
             if tG_flag[i] != 1:
                 continue

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Literal
-from .utils import subband_rects
+from .shared import subband_rects
 from .io_segmentation import BitWriter, BitReader
 from .bpe_dc import _code_id_bits_len, _select_k_opt, _select_k_heur, CodeSel  # reuse DC helpers
 
@@ -25,8 +25,6 @@ def _block_coords_LL3(H:int, W:int, levels:int) -> Tuple[np.ndarray, int, int]:
     return coords, LL.h, LL.w
 
 def _gaggle_sizes_ac(S: int) -> List[int]:
-    # Same grouping as DC: first gaggle 16 values (no special reference handling here),
-    # but §4.4 says “same differencing procedure”; to mirror DC exactly we’ll use:
     # first gaggle carries reference then 15 deltas; subsequent 16 deltas
     if S == 0:
         return []
@@ -58,9 +56,6 @@ def _gather_block_ac(coeffs: np.ndarray, levels: int) -> Tuple[np.ndarray, int]:
     LL = rects[f"LL{levels}"]
     # Families/subbands per Table 4-1/4-2:
     # i=0: parents from HL3, children from HL2, grandchildren from (HL1/LH1/HH1 groups)
-    # We'll use the spec’s coordinate rules (Table 4-1) to sample each needed AC coefficient.
-    # For brevity, below we gather all AC magnitudes by constructing each group relative to (r,c).
-    # (Full detail mapping can be expanded as needed.)
     def subview(name): 
         R = rects[name]
         return coeffs[R.y:R.y+R.h, R.x:R.x+R.w]

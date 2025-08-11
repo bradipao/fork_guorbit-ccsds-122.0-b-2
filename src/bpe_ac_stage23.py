@@ -52,7 +52,7 @@ def _coord_family_map(shape: Tuple[int,int], levels: int) -> Dict[Tuple[int,int]
                 fam_of[(y, x)] = fid
     return fam_of
 
-# -------- Stage 2: refinement for NEWLY significant at this plane --------
+#Stage 2: refinement for NEWLY significant at this plane
 
 def encode_stage2_plane(coeffs: np.ndarray,
                         newly_sig_coords: List[Tuple[int,int]],
@@ -153,7 +153,7 @@ def decode_stage2_plane(shape: Tuple[int,int],
     return out
 
 
-# -------- Stage 3: refinement for PREVIOUSLY significant (earlier planes) --------
+#Stage 3: refinement for PREVIOUSLY significant (earlier planes)
 
 def encode_stage3_plane(coeffs: np.ndarray,
                         prev_sig_coords: List[Tuple[int,int]],

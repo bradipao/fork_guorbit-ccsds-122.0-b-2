@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Dict, Tuple, List
 from .io_segmentation import BitWriter, BitReader
 
-# ---- ID bits (Table 4-18) ----
+#  ID bits 
 # For mapped pattern size N, we write these IDs once per gaggle per N *before* the first codeword of that N.
 # N=2: 1 ID bit; N=3,4: 2 ID bits. 'uncoded' is the last option listed in the table.
 _ID_BITS = {
@@ -11,16 +11,15 @@ _ID_BITS = {
     4: {0: "00", 1: "01", 2: "10", 3: "11"},   # 0,1,2, (3=uncoded)
 }
 
-# ---- VLC code tables (Tables 4-15..4-17) ----
-# Each maps: option -> {symbol:int -> code:str}
+# VLC code tables (Tables 4-15..4-17)
 _VLC_2BIT: Dict[int, Dict[int, str]] = {
     0: {0: "1",   1: "01",  2: "001", 3: "000"},
-    1: {0: "00",  1: "01",  2: "10",  3: "11"},  # uncoded (fixed 2 bits)
+    1: {0: "00",  1: "01",  2: "10",  3: "11"},  
 }
 _VLC_3BIT: Dict[int, Dict[int, str]] = {
     0: {0:"1", 1:"01", 2:"001", 3:"00000", 4:"00001", 5:"00010", 6:"000110", 7:"000111"},
     1: {0:"10",1:"11", 2:"010", 3:"011",   4:"0010",  5:"0011",  6:"0000",   7:"0001"},
-    3: {0:"000",1:"001",2:"010",3:"011",   4:"100",   5:"101",   6:"110",    7:"111"},  # uncoded (3 bits)
+    3: {0:"000",1:"001",2:"010",3:"011",   4:"100",   5:"101",   6:"110",    7:"111"},
 }
 _VLC_4BIT: Dict[int, Dict[int, str]] = {
     0: {
@@ -58,7 +57,7 @@ def best_option_for_symbols(symbols: List[int], N: int) -> int:
     """
     tbl = _vlc_table(N)
     # ID bits cost (once per gaggle when the first codeword of this N appears)
-    id_bits = len(_ID_BITS[N][list(_ID_BITS[N].keys())[0]])  # 1 for N=2; 2 for N=3,4
+    id_bits = len(_ID_BITS[N][list(_ID_BITS[N].keys())[0]]) 
     best = None
     best_len = None
     for opt, codebook in tbl.items():
@@ -84,7 +83,6 @@ def encode_symbol_with_option(bw: BitWriter, symbol: int, N: int, option: int) -
 
 def decode_symbol_with_option(br: BitReader, N: int, option: int) -> int:
     # Scalar decoder: read bits until a codeword in the chosen table matches.
-    # (Tables are prefix-free; small linear scan is fine for now.)
     # Build reverse dict once per call:
     inv = {v: k for k, v in _vlc_table(N)[option].items()}
     acc = ""

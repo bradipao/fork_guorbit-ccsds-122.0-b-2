@@ -146,7 +146,8 @@ def encode_dc(coeffs: np.ndarray, levels: int, bitshift_ll3: int = 0,
     H, W = coeffs.shape
     rects = subband_rects(H, W, levels)
     LL = rects[f"LL{levels}"]; y,x,h,w = LL.y, LL.x, LL.h, LL.w
-    dc = coeffs[y:y+h, x:x+w].reshape(-1).astype(np.int64)
+    ll = coeffs[y:y+h, x:x+w]
+    dc = ll.reshape(-1).astype(np.int64) 
     S = dc.size
 
     BitDepthDC = _bitdepth_dc(dc)
