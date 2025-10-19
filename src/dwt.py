@@ -4,13 +4,29 @@ from __future__ import annotations
 import numpy as np
 
 # Symmetric (mirror) edge access
-
+# [bradipao]: this is reflect, not mirror
 def _sym_idx(i: int, n: int) -> int:
     # mirror with duplication at the border (… 1 0 | 0 1 2 …  n-2 n-1 | n-1 n-2 …)
     if i < 0:
         return -i - 1
     if i >= n:
         return 2 * n - 1 - i
+    return i
+
+# Fixed functions that implement data mirror at the border
+# (… 2 1 | 0 1 2 …  n-2 n-1 | n-2 n-3 …)
+def _sym_idx_s(i: int,n: int) -> int:
+    if i < 0:
+        return -i
+    if i >= n:
+        return 2 * n - 1 - i
+    return i
+
+def _sym_idx_d(i: int,n: int) -> int:
+    if i < 0:
+        return -i - 1
+    if i >= n:
+        return 2 * n - 1 - 2
     return i
 
 # 1-D forward / inverse 9/7M lifting
@@ -35,10 +51,10 @@ def dwt97m_forward_1d(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     # prediction
     d1 = d.copy()
     for l in range(nd):
-        sm1 = s[_sym_idx(l - 1, ns)]
-        s0  = s[_sym_idx(l,     ns)]
-        s1  = s[_sym_idx(l + 1, ns)]
-        s2  = s[_sym_idx(l + 2, ns)]
+        sm1 = s[_sym_idx_s(l - 1, ns)]    # [bradipao]: fixed mirror
+        s0  = s[_sym_idx_s(l,     ns)]    # [bradipao]: fixed mirror
+        s1  = s[_sym_idx_s(l + 1, ns)]    # [bradipao]: fixed mirror
+        s2  = s[_sym_idx_s(l + 2, ns)]    # [bradipao]: fixed mirror
         num = -(sm1 + s2) + 9 * (s0 + s1)
         pred = (num + 8) // 16
         d1[l] = d[l] - pred
@@ -46,8 +62,8 @@ def dwt97m_forward_1d(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     # update
     s1a = s.copy()
     for l in range(ns):
-        dm1 = d1[_sym_idx(l - 1, nd)]
-        d0  = d1[_sym_idx(l,     nd)]
+        dm1 = d1[_sym_idx_d(l - 1, nd)]    # [bradipao]: fixed mirror
+        d0  = d1[_sym_idx_d(l,     nd)]    # [bradipao]: fixed mirror
         upd = (2 - (dm1 + d0)) // 4
         s1a[l] = s[l] - upd
 
