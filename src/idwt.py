@@ -1,7 +1,7 @@
 #Inverse 9/7 Integer DWT
 
 from __future__ import annotations
-from src.dwt import _sym_idx, dwt97m_forward_1d
+from src.dwt import _sym_idx_s, _sym_idx_d, dwt97m_forward_1d
 import numpy as np
 
 
@@ -22,18 +22,18 @@ def dwt97m_inverse_1d(s: np.ndarray, d: np.ndarray, out_dtype=None) -> np.ndarra
     # inverse update -> s^(0)
     s0 = s1.copy()
     for l in range(ns):
-        dm1 = d1[_sym_idx(l - 1, nd)]
-        d0  = d1[_sym_idx(l,     nd)]
+        dm1 = d1[_sym_idx_d(l - 1, nd)]
+        d0  = d1[_sym_idx_d(l,     nd)]
         upd = (2 - (dm1 + d0)) // 4   # same rounding as forward
         s0[l] = s1[l] + upd
 
     # inverse prediction -> d^(0)
     d0_arr = d1.copy()
     for l in range(nd):
-        sm1 = s0[_sym_idx(l - 1, ns)]
-        s00 = s0[_sym_idx(l,     ns)]
-        s01 = s0[_sym_idx(l + 1, ns)]
-        s02 = s0[_sym_idx(l + 2, ns)]
+        sm1 = s0[_sym_idx_s(l - 1, ns)]
+        s00 = s0[_sym_idx_s(l,     ns)]
+        s01 = s0[_sym_idx_s(l + 1, ns)]
+        s02 = s0[_sym_idx_s(l + 2, ns)]
         num = -(sm1 + s02) + 9 * (s00 + s01)
         pred = (num + 8) // 16
         d0_arr[l] = d1[l] + pred
